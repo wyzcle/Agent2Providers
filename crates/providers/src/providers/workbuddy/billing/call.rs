@@ -110,6 +110,11 @@ pub(super) async fn call(
         Some(body.cloned().unwrap_or_else(|| json!({})))
     };
 
+    // 「只有对话走代理」：计费链（余额/签到/用量）属控制面，开关打开时直连。
+    // 登录、凭证续期、身份确认**不**经这里（各走 `login.rs` / `refresh.rs` /
+    // `refresh_identity.rs`），它们必须和对话同 IP，故保持原样。
+    let proxy = crate::proxy_util::chat_only_proxy(proxy);
+
     logging::verbose(
         "[Billing]",
         &format!(

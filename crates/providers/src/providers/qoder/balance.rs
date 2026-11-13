@@ -397,7 +397,13 @@ pub async fn query(
 ) -> Result<Value, GatewayError> {
     let mut credentials = refresh::ensure_fresh(ctx, site, account_id, false).await?;
     let (record, _) = refresh::snapshot(ctx, site, account_id).await?;
-    let proxy = auth::account_proxy(&record)?;
+    // 「只有对话走代理」：额度查询属控制面，开关打开时直连。凭证续期
+    // （`ensure_fresh` 内部）不经过这里，故仍走账号代理、与对话同 IP。
+    let proxy = if crate::proxy_util::chat_only_proxy_enabled() {
+        None
+    } else {
+        auth::account_proxy(&record)?
+    };
     if site.is_qwenwork() {
         return qwenwork_usage(ctx, site, account_id, &mut credentials, proxy.as_ref()).await;
     }

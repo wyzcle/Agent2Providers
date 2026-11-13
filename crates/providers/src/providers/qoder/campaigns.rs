@@ -44,7 +44,12 @@ async fn load_with(
         return Err(GatewayError::with_status(400, "该提供商没有活动领取接口"));
     }
     let (record, _) = refresh::snapshot(ctx, site, account).await?;
-    let proxy = auth::account_proxy(&record)?;
+    // 「只有对话走代理」：活动/签到属控制面，开关打开时直连。
+    let proxy = if crate::proxy_util::chat_only_proxy_enabled() {
+        None
+    } else {
+        auth::account_proxy(&record)?
+    };
     let mut headers = endpoints::sash_headers(&credentials.access_token);
     let mut list = fetch(&credentials, proxy.as_ref(), &headers).await?;
     let mut risk_note = None;

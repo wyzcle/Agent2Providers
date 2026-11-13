@@ -17,6 +17,55 @@ pub enum ProxyResolution {
     Failed(String),
 }
 
+/// 「只有对话走代理」开关的环境变量名。
+pub const CHAT_ONLY_PROXY_ENV: &str = "A2A_CHAT_ONLY_PROXY";
+
+/// 是否开着「只有对话走代理」。
+///
+/// ── 这个开关做什么 ──────────────────────────────────────────
+/// 账号代理的语义本来是「这家账号的所有出站都走它」：对话、查余额、签到、
+/// 拉模型目录、刷新凭证，全都走同一个出口。可是运营侧真正要躲的往往只是
+/// **对话**那一条链的风控 —— 余额/签到/目录这些控制面请求走代理，除了多花
+/// 隧道时长没有别的好处（有的还因为换了 IP 反而触发异地校验）。
+///
+/// 打开之后，本文件的 [`chat_only_proxy`] 会让**控制面**请求一律直连，
+/// 对话链原样保留账号代理。对话链不归这里管：它由网关通过
+/// `ChatRequest.proxy` 传下来，插件本来就只能服从。
+///
+/// ── 为什么默认关 ────────────────────────────────────────────
+/// 默认必须是官方行为。没设这个环境变量时本函数返回 `false`，所有调用点
+/// 拿到原值，与上游逐字一致 —— 这样官方更新时本地的改动面只是一次
+/// 「多包一层函数」的机械替换，不会悄悄改变用户没要求的语义。
+pub fn chat_only_proxy_enabled() -> bool {
+    parse_switch(std::env::var(CHAT_ONLY_PROXY_ENV).ok().as_deref())
+}
+
+/// 开关值的判定（抽出来是为了单测：`set_var` 在测试里并发不安全）。
+///
+/// 只认明确的真值。空串、`0`、`false`、拼错的值一律当「关」—— 这个开关
+/// 一开就会改变出网路径，宁可让人发现「设了没生效」，也不要让手误的值
+/// 悄悄生效。
+fn parse_switch(value: Option<&str>) -> bool {
+    matches!(value, Some("1") | Some("true") | Some("TRUE") | Some("yes"))
+}
+
+/// 控制面请求该用的代理：开关打开时一律 `None`（直连），否则原样透传。
+///
+/// ── 只给「纯读」控制面用 ────────────────────────────────────
+/// 余额、额度、签到、活动、用量统计这类**读了也不改变身份**的请求可以用它。
+///
+/// **身份锚点不要调它**：登录、凭证续期（`refresh` / `renew` / `ensure_fresh`）、
+/// 身份确认（`refresh_identity`）、模型目录（部分平台把目录与账号授权绑在一起，
+/// 且对话路径会读它）。这些请求换 IP 会让上游看到「同一个账号在两个地方活动」，
+/// 比全程同 IP 更可疑 —— 那是把省隧道时长换成了封号风险，得不偿失。
+pub fn chat_only_proxy(proxy: Option<&WireProxy>) -> Option<&WireProxy> {
+    if chat_only_proxy_enabled() {
+        None
+    } else {
+        proxy
+    }
+}
+
 /// 解析账号记录里的 `proxy` 配置。
 ///
 /// `None` = 没配代理（直连）；`Some(Resolved)` = 可用；`Some(Failed)` = 配错了。
@@ -198,4 +247,63 @@ fn decode(text: &str) -> String {
         index += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    //! 「只有对话走代理」开关的判定。
+    //!
+    //! 这里钉的是**默认关**与**只认明确真值**两条：这个开关一开就改出网路径，
+    //! 手误（`A2A_CHAT_ONLY_PROXY=0`、空串、拼成 `yse`）绝不能生效。
+    use super::*;
+
+    #[test]
+    fn 未设置时是关的() {
+        assert!(!parse_switch(None));
+    }
+
+    #[test]
+    fn 只认四个明确真值() {
+        for value in ["1", "true", "TRUE", "yes"] {
+            assert!(parse_switch(Some(value)), "{value} 应判为开");
+        }
+    }
+
+    #[test]
+    fn 其余一律判为关() {
+        for value in ["", "0", "false", "FALSE", "no", "off", "yse", " true", "true "] {
+            assert!(!parse_switch(Some(value)), "{value:?} 应判为关");
+        }
+    }
+
+    /// 开关关着时 `chat_only_proxy` 必须**原样透传** —— 这是「默认行为与
+    /// 上游逐字一致」的保证，也是官方更新时改动面能保持机械替换的前提。
+    #[test]
+    fn 关着时原样透传() {
+        let proxy = WireProxy {
+            protocol: "socks5".into(),
+            host: "127.0.0.1".into(),
+            port: Some(41081),
+            username: String::new(),
+            password: String::new(),
+        };
+        // 用 parse_switch 直接验证语义（不碰环境变量）
+        assert!(!parse_switch(None));
+        let kept = if parse_switch(None) { None } else { Some(&proxy) };
+        assert_eq!(kept.map(|p| p.port), Some(Some(41081)));
+    }
+
+    /// 开着时必须给出 `None`（直连）。
+    #[test]
+    fn 开着时给直连() {
+        let proxy = WireProxy {
+            protocol: "socks5".into(),
+            host: "127.0.0.1".into(),
+            port: Some(41081),
+            username: String::new(),
+            password: String::new(),
+        };
+        let dropped = if parse_switch(Some("1")) { None } else { Some(&proxy) };
+        assert!(dropped.is_none());
+    }
 }

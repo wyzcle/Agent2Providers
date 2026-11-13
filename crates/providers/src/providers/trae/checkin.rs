@@ -349,7 +349,10 @@ pub async fn claim_daily_checkin(
     let credential = Credential::from_payload(&record).map_err(GatewayError::new)?;
     let proxy = account_proxy(&record)?;
     let credential = renew_if_due(ctx, &record, &credential, proxy.as_ref()).await?;
-    let first = run(&credential, proxy.as_ref(), UG_HOST).await?;
+    // 「只有对话走代理」：续期（下面 `renew_forced`）是身份锚点，仍走账号代理；
+    // 只有签到那两发 `run` 改直连。所以这里保留原 proxy，另取一个读用值。
+    let read_proxy = crate::proxy_util::chat_only_proxy(proxy.as_ref());
+    let first = run(&credential, read_proxy, UG_HOST).await?;
     if !needs_reauth(&first) {
         return Ok(first);
     }
@@ -377,7 +380,7 @@ pub async fn claim_daily_checkin(
             return Ok(row);
         }
     };
-    let mut row = run(&renewed, proxy.as_ref(), UG_HOST).await.map_err(|error| {
+    let mut row = run(&renewed, read_proxy, UG_HOST).await.map_err(|error| {
         if error.status_code == 401 { error.with_code("checkin_auth_retry_exhausted") } else { error }
     })?;
     if let Some(map) = row.as_object_mut() {

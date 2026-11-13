@@ -1193,7 +1193,13 @@ pub async fn query_usage(ctx: &PluginCtx, account_id: &str) -> Result<Value, Gat
     // 临期先续期：这条族对谱系最敏感，拿一个刚被服务端作废的串去问余额，
     // 得到的是 401「unable to authenticate」而不是"额度为 0"，报错了也白报。
     let credential = renew_if_due(ctx, &record, &credential, proxy.as_ref()).await?;
-    let readout = read(&credential, proxy.as_ref()).await?;
+    // 「只有对话走代理」：续期是身份锚点，仍走账号代理（与对话同 IP）；
+    // 只有**读额度**这一步在开关打开时改直连。
+    let readout = if crate::proxy_util::chat_only_proxy_enabled() {
+        read(&credential, None).await?
+    } else {
+        read(&credential, proxy.as_ref()).await?
+    };
     Ok(document(&readout, true))
 }
 
